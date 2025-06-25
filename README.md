@@ -11,3 +11,9 @@ Rehydration time constant is Keff/C
 
 tau = R_0 * C
 tau = C / Keff
+
+
+References
+==========
+
+Donovan et al. (2001, Oecologia), "Predawn plant water potential does not necessarily..."
