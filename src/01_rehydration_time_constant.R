@@ -10,8 +10,12 @@ df <- read.csv(JESSICA.CSV) %>%
     timezone, latitude = latitude_wgs84, longitude = longitude_wgs84,
     water_potential_mean, water_potential_n, genus, specific_epithet, organ,
     canopy_position) %>%
-  # mutate(date = as.Date(date)) %>%
-  mutate(date = ymd_hms(sprintf('%s %s', date, time)))
+  # Necessary to do this rowwise because tzone argument can't use a column value;
+  #   ACTUALLY, still doesn't work
+  # rowwise() %>%
+  # mutate(datetime = ymd_hms(sprintf('%s %s', date, time), tzone = timezone)) %>%
+  mutate(datetime = ymd_hms(sprintf('%s %s', date, time))) %>%
+  mutate(hour = hour(datetime) + minute(datetime) / 60)
 
 with(df, table(genus, specific_epithet))
 
@@ -26,14 +30,11 @@ with(df %>%
 df %>%
   filter(genus == 'Juniperus', specific_epithet == 'osteosperma') %>%
   filter(water_potential_mean > -10) %>%
-  group_by(indiv.id, genus, specific_epithet, date) %>%
-  summarize(water_potential_mean = mean(water_potential_mean)) %>%
-  mutate(DOY = as.integer(format(date, '%j'))) %>%
+  mutate(DOY = as.integer(format(datetime, '%j'))) %>%
   filter(DOY %in% 150:180) %>%
   filter(indiv.id == 6) %>%
-  View
-  mutate(hour = hour(date)) %>%
 ggplot(mapping = aes(x = hour, y = water_potential_mean)) +
-  geom_line() +
+  geom_line(aes(color = sensor_id)) +
   facet_wrap(~ DOY, scales = 'free_x') +
-  theme(legend.position = 'top')
+  theme(legend.position = 'top') +
+  labs(x = 'Hour (Local Time, MST)')
