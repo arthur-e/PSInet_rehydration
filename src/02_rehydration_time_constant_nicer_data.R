@@ -1,10 +1,17 @@
 library(dplyr, warn.conflicts = F)
 library(tidyr)
+library(stringr)
 library(ggplot2)
-library(lubridate)
-library(bbmle)
+library(RColorBrewer)
+library(lubridate, warn.conflicts = F)
+library(bbmle, warn.conflicts = F)
 
 JESSICA.CSV <- '~/Downloads/SRER_LATR_pdd_Apr_June.csv'
+
+facet.theme <- theme_linedraw()
+
+
+# Loading data #################################################################
 
 df <- read.csv(JESSICA.CSV) %>%
   mutate(datetime = ymd_hms(dt)) %>%
@@ -63,6 +70,121 @@ ggplot(mapping = aes(x = hour.rel, y = WP_m)) +
   geom_line(aes(color = DOY.rel, group = DOY.rel))
 
 
+# Empirical determination of periods, extremes #################################
+
+# I want each day to start and end at 10h00 local, as this is (likely) before
+#   the minimum daily water potential
+df.emp <- df %>%
+  select(datetime, DOY, hour, WP_m, WP_sd) %>%
+  # Roll back "midnight" to 10h00 local
+  mutate(datetime.rel = datetime - dhours(10),
+    DOY.rel = as.integer(format(datetime.rel, '%j')),
+    hour.rel = hour(datetime.rel) + minute(datetime.rel) / 60) %>%
+  filter(DOY.rel > 90) %>%
+  arrange(datetime)
+
+# Diagnostics
+df.emp %>%
+  # filter(DOY.rel %% 10 == 0) %>%
+  filter(DOY.rel < 100) %>%
+  arrange(datetime) %>%
+ggplot(mapping = aes(x = hour.rel, y = WP_m)) +
+  geom_ribbon(aes(ymin = WP_m - 1 * WP_sd, ymax = WP_m + 1 * WP_sd),
+    fill = 'lightblue', alpha = 0.5) +
+  geom_line() +
+  scale_x_continuous(labels = function (x) { (x + 10) %% 24 }) +
+  facet_wrap(~ DOY.rel, scales = 'free_x', nrow = 2) +
+  labs(x = 'Hour of Day (Local Time)')
+
+# Compute daily min, max water potential and when that is achieved
+df.emp.agg <- df.emp %>%
+  group_by(DOY.rel) %>%
+  summarize(min.psi = min(WP_m),
+    max.psi = max(WP_m),
+    when.min = (hour.rel[which.min(WP_m)] + 10) %% 24,
+    when.max = (hour.rel[which.max(WP_m)] + 10) %% 24) %>%
+  # Then, compute how long it took to recharge
+  mutate(diff = (24 - when.min) + when.max)
+
+df.emp.agg %>%
+  select(when.min, when.max) %>%
+  gather(key = group, value = hour) %>%
+  mutate(group = if_else(str_detect(group, 'min'), 'Minimum', 'Maximum')) %>%
+ggplot(mapping = aes(x = hour)) +
+  geom_histogram(aes(fill = group), bins = 48) +
+  scale_x_continuous(limits = c(0, 24), breaks = seq(0, 24, 3)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  scale_fill_manual(values = brewer.pal(5, 'RdBu')[c(5,1)]) +
+  labs(fill = NULL, x = 'Hour of Day', y = 'Count of Days') +
+  theme_minimal() +
+  theme(legend.position = 'top',
+    legend.margin = margin(0, 0, -0.1, 0, 'cm'))
+ggsave(width = 5, height = 4, dpi = 172, bg = 'white',
+  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_rehydration_time_hour_of_day_histograms_min-max_psi.png')
+
+df.emp.agg %>%
+ggplot(mapping = aes(x = DOY.rel, y = diff)) +
+  geom_line() +
+  geom_smooth(fill = 'lightblue') +
+  labs(x = 'Day of Year', y = 'Rehydration Time (hours)') +
+  theme_minimal()
+ggsave(width = 5, height = 4, dpi = 172, bg = 'white',
+  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_rehydration_time_series_empirical.png')
+
+
+# Empirical determination, more sophisticated ##################################
+
+# In this section, we don't assume that rehydration can occur in less than 24
+#   hours; i.e., we look forward 30 hours from 10h00 local
+
+require(zoo)
+df.emp$WP_m_min <- with( # NOTE: There is no rollmin() function
+  mutate(df.emp, neg_WP_m = -WP_m), -(rollmax(neg_WP_m, k = 30, align = 'left', fill = NA)))
+df.emp$WP_m_max <- with(
+  mutate(df.emp, neg_WP_m = -WP_m), rollmax(WP_m, k = 30, align = 'left', fill = NA))
+
+df.emp %>%
+  # We used 30-hour windows starting at 10h00 local
+  filter(hour == 10) %>%
+  select(WP_m_max, WP_m_min) %>%
+  gather(key = group, value = hour) %>%
+  mutate(group = if_else(str_detect(group, 'min'), 'Minimum', 'Maximum')) %>%
+ggplot(mapping = aes(x = hour)) +
+  geom_density(aes(fill = group), alpha = 0.5, color = 'transparent') +
+  scale_y_continuous(expand = c(0, 0)) +
+  scale_fill_manual(values = brewer.pal(5, 'RdBu')[c(5,1)]) +
+  labs(fill = NULL, x = 'Water Potential (MPa)', y = 'Count of Days') +
+  theme_minimal() +
+  theme(legend.position = 'top',
+    legend.margin = margin(0, 0, -0.1, 0, 'cm'))
+ggsave(width = 5, height = 4, dpi = 172, bg = 'white',
+  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_rehydration_time_min-max_water_potential_from_30hr_moving_window.png')
+
+df.rehydration <- df.emp %>%
+  group_by(DOY.rel) %>%
+  filter(!is.na(WP_m_min)) %>%
+  summarize(
+    when.min = hour[which(WP_m == WP_m_min)],
+    when.max = hour[which(WP_m == WP_m_max)],
+    # We used 30-hour windows starting at 10h00 local
+    min.psi = first(WP_m_min),
+    max.psi = first(WP_m_max)) %>%
+  # Compute whether recharge happened and how long it took
+  mutate(max.psi.last = round(lag(max.psi, 1), 1),
+    rehydration = round(max.psi, 1) >= max.psi.last,
+    time.hours = (24 - when.min) + when.max) %>%
+  filter(!is.na(rehydration))
+
+df.emp %>%
+  left_join(df.rehydration, by = 'DOY.rel') %>%
+  filter(DOY.rel < 100) %>%
+  select(datetime, datetime.rel, DOY.rel, hour, WP_m, min.psi, max.psi, rehydration) %>%
+  mutate(hour.rel = hour(datetime.rel) + minute(datetime.rel) / 60) %>%
+ggplot(mapping = aes(x = hour.rel, y = WP_m)) +
+  geom_line(aes(color = rehydration, group = NULL)) +
+  facet_wrap(~ DOY.rel)
+
+
 # Model fitting framework ######################################################
 
 rmse <- function (observed, predicted) {
@@ -88,12 +210,12 @@ plot.function(target.func, from = 0, to = 24, bty = 'n', xlab = 'Hour (Local Tim
 
 # Fitting model parameters with optim ##########################################
 
-df.out <-
-result <- optim(c(-2, 2), wrap.rmse,
-  method = 'L-BFGS-B', lower = c(-9, 1), upper = c(0, 24))
+# df.out <-
+# result <- optim(c(-2, 2), wrap.rmse,
+#   method = 'L-BFGS-B', lower = c(-9, 1), upper = c(0, 24))
 
-require(broom)
-require(purrr)
-df %>%
-  nest(data = -DOY) %>%
-  mutate(fit = map(data, ~ lm(WP_m ~
+# require(broom)
+# require(purrr)
+# df %>%
+#   nest(data = -DOY) %>%
+#   mutate(fit = map(data, ~ lm(WP_m ~
