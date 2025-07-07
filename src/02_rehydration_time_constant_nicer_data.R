@@ -8,7 +8,9 @@ library(bbmle, warn.conflicts = F)
 
 JESSICA.CSV <- '~/Downloads/SRER_LATR_pdd_Apr_June.csv'
 
-facet.theme <- theme_linedraw()
+facet.theme <- theme_linedraw() +
+  theme(strip.background = element_blank(),
+    strip.text = element_text(color = 'black', face = 'bold'))
 
 
 # Loading data #################################################################
@@ -85,16 +87,21 @@ df.emp <- df %>%
 
 # Diagnostics
 df.emp %>%
-  # filter(DOY.rel %% 10 == 0) %>%
-  filter(DOY.rel < 100) %>%
+  filter(DOY.rel == 91 | DOY.rel %% 10 == 0) %>%
+  # filter(DOY.rel < 100) %>%
   arrange(datetime) %>%
+  mutate(DOY.rel = sprintf('DOY=%03d', DOY.rel)) %>%
 ggplot(mapping = aes(x = hour.rel, y = WP_m)) +
   geom_ribbon(aes(ymin = WP_m - 1 * WP_sd, ymax = WP_m + 1 * WP_sd),
     fill = 'lightblue', alpha = 0.5) +
   geom_line() +
-  scale_x_continuous(labels = function (x) { (x + 10) %% 24 }) +
+  scale_x_continuous(expand = c(0, 0), breaks = seq(2, 24, 6),
+    labels = function (x) { (x + 10) %% 24 }) +
   facet_wrap(~ DOY.rel, scales = 'free_x', nrow = 2) +
-  labs(x = 'Hour of Day (Local Time)')
+  labs(x = 'Hour of Day (Local Time)', y = 'Water Potential (MPa)') +
+  facet.theme
+ggsave(width = 7, height = 4.5, dpi = 172,
+  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_example_time_series_relative_to_10h00_local.png')
 
 # Compute daily min, max water potential and when that is achieved
 df.emp.agg <- df.emp %>%
