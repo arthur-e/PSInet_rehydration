@@ -6,6 +6,7 @@ library(RColorBrewer)
 library(lubridate, warn.conflicts = F)
 library(bbmle, warn.conflicts = F)
 library(patchwork)
+library(reticulate)
 
 JESSICA.CSV <- '~/Downloads/SRER_LATR_pdd_Apr_June.csv'
 REHYDRATION.CUTOFF <- 0.95
@@ -13,6 +14,13 @@ REHYDRATION.CUTOFF <- 0.95
 facet.theme <- theme_linedraw() +
   theme(strip.background = element_blank(),
     strip.text = element_text(color = 'black', face = 'bold'))
+
+require(reticulate)
+if (Sys.info()['nodename'] == 'Gullveig') {
+  use_python('/usr/local/python-env/suntransit/bin/python')
+} else {
+}
+suntransit <- import('suntransit')
 
 # TODO Examine how the timing of min, max psi changes over the season
 
@@ -203,6 +211,35 @@ ggsave(width = 5, height = 4, dpi = 172, bg = 'white',
   file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_change_in_daily_max_WP.png')
 
 
+# Change in rehydration time? ##################################################
+
+df.emp.agg %>%
+  select(DOY.rel, when.min, when.max) %>%
+  gather(key = group, value = hour, -DOY.rel) %>%
+  mutate(group = if_else(str_detect(group, 'min'), 'Minimum', 'Maximum')) %>%
+  mutate(date = as.Date(sprintf('2023-%03d', DOY.rel), '%Y-%j')) %>%
+  group_by(DOY.rel) %>%
+  # America/Phoenix is GMT-07
+  mutate(sunrise = (unlist(suntransit$sunrise_sunset(
+    c(33, -112), dt = date[1]))[1] - 7) %% 24) %>%
+  mutate(sunset = (unlist(suntransit$sunrise_sunset(
+    c(33, -112), dt = date[1]))[2] - 7) %% 24) %>%
+ggplot(mapping = aes(x = DOY.rel, y = hour)) +
+  geom_ribbon(aes(ymin = sunrise, ymax = sunset), fill = 'gold', alpha = 0.5) +
+  geom_line(aes(color = group)) +
+  scale_color_manual(values = brewer.pal(5, 'RdBu')[c(5,1)]) +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(color = NULL, x = 'Day of Year', y = 'Hour (Local Time)') +
+  theme_minimal() +
+  theme(legend.position = 'top', legend.margin = margin(0, 0, -0.3, 0, 'cm'))
+ggsave(width = 6, height = 4, dpi = 172, bg = 'white',
+  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_rehydration_time_hour_of_day_min_max_with_daylight_hours.png')
+
+# Example
+# (unlist(suntransit$sunrise_sunset(c(33, -112), dt = as.Date('2015-03-31'))) - 7) %% 24
+
+
+
 # Rehydration period: Smoothing ################################################
 
 require(broom)
@@ -308,7 +345,11 @@ df.smoothing <- df.tmp.12 %>%
   mutate(diff = (hour.rel + 24) - lag(hour.rel, 1)) %>%
   select(datetime.rel, DOY.rel = DOY, hour.rel, smoothed, eq.min, eq.max, diff) %>%
   group_by(DOY.rel) %>%
+  # NOTE: Arranging by eq.min necessary to get when.min, when.max
+  arrange(DOY.rel, eq.min) %>%
   summarize(diff = median(diff, na.rm = T),
+    when.max = hour.rel[1],
+    when.min = hour.rel[2],
     max.psi = max(smoothed),
     min.psi = min(smoothed)) %>%
   # Compare to 95% of previous day's maximum, as a kind of smoothing; note
@@ -405,7 +446,11 @@ ggplot(mapping = aes(x = hour.rel, y = WP_m)) +
   geom_line(aes(color = DOY.rel, group = DOY.rel)) +
   # Change X-axis so that the "day" starts at 10h00 local time
   scale_x_continuous(expand = c(0, 0), breaks = seq(2, 24, 6),
-    labels = function (x) { (x + HOUR.START) %% 24 })
+    labels = function (x) { (x + HOUR.START) %% 24 }) +
+  labs(x = 'Hour of Day (Local Time)', y = 'Water Potential (MPa)',
+    color = 'DOY')
+ggsave(width = 5.5, height = 5, dpi = 172,
+  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_RC_circuit_curves_by_day_over_season.png')
 
 # A data frame with the unique DOYs
 df.doy <- df.out %>%
@@ -474,3 +519,74 @@ for (doy in df.params$DOY.rel) {
 g1 + plot_layout(nrow = 3, axis_titles = 'collect')
 ggsave(width = 7, height = 4.5, dpi = 172,
   file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_RC_circuit_model_fits.png')
+
+df.emp.agg %>%
+  head
+
+# 5-tau analysis
+df.params %>%
+  left_join(df.emp.agg, by = 'DOY.rel') %>%
+  mutate(five.tau = tau * 5) %>%
+  mutate(re.period = (when.max + 24) - when.min) %>%
+  # One definition: Rehydration occurs if the 5*tau is less than the observed
+  #   rehydration period
+  mutate(rehydrated = five.tau < re.period) %>%
+  filter(!is.na(rehydrated)) %>%
+ggplot(mapping = aes(x = DOY.rel, y = rehydrated)) +
+  geom_point(aes(color = re.period), shape = 1, size = 2) +
+  scale_color_gradientn(colors = magma(10, direction = -1)) +
+  labs(x = 'Day of Year', y = 'Rehydrated?',
+    subtitle = latex2exp::TeX('Based on $5\\tau$ less than argmax($\\Psi$) - argmin($\\Psi$)'),
+    color = 'Rehydration\nTime (hrs)') +
+  theme_dark() +
+  theme(plot.background = element_blank(),
+    legend.background = element_blank())
+ggsave(width = 5, height = 2.4, dpi = 172, bg = 'transparent',
+  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_rehydration_time_series_5tau.png')
+
+df.params %>%
+  left_join(df.smoothing, by = 'DOY.rel') %>%
+  mutate(five.tau = tau * 5) %>%
+  mutate(re.period = (when.max + 24) - when.min) %>%
+  # One definition: Rehydration occurs if the 5*tau is less than the observed
+  #   rehydration period
+  mutate(rehydrated = five.tau < re.period) %>%
+  filter(!is.na(rehydrated)) %>%
+ggplot(mapping = aes(x = DOY.rel, y = rehydrated)) +
+  geom_point(aes(color = re.period), shape = 1, size = 2) +
+  scale_color_gradientn(colors = magma(10, direction = -1)) +
+  labs(x = 'Day of Year', y = 'Rehydrated?',
+    subtitle = latex2exp::TeX('Based on $5\\tau$ less than argmax($\\Psi$) - argmin($\\Psi$) (Smoothing)'),
+    color = 'Rehydration\nTime (hrs)') +
+  theme_dark() +
+  theme(plot.background = element_blank(),
+    legend.background = element_blank())
+ggsave(width = 5, height = 2.4, dpi = 172, bg = 'transparent',
+  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_rehydration_time_series_5tau_smoothed.png')
+
+df.params %>%
+  left_join(df.emp.agg, by = 'DOY.rel') %>%
+  mutate(five.tau = tau * 5) %>%
+  mutate(date = as.Date(sprintf('2023-%03d', DOY.rel), '%Y-%j')) %>%
+  group_by(DOY.rel) %>%
+  # America/Phoenix is GMT-07
+  mutate(sunrise = (unlist(suntransit$sunrise_sunset(
+    c(33, -112), dt = date[1]))[1] - 7) %% 24) %>%
+  mutate(sunset = (unlist(suntransit$sunrise_sunset(
+    c(33, -112), dt = date[1]))[2] - 7) %% 24) %>%
+  # One definition: Rehydration occurs if the 5*tau is less than the observed
+  #   rehydration period
+  mutate(re.time = (when.min + five.tau) %% 24,
+    rehydrated = re.time < sunrise) %>%
+  filter(!is.na(rehydrated)) %>%
+ggplot(mapping = aes(x = DOY.rel, y = rehydrated)) +
+  geom_point(aes(color = re.time), shape = 1, size = 2) +
+  scale_color_gradientn(colors = magma(10, direction = -1)) +
+  labs(x = 'Day of Year', y = 'Rehydrated?',
+    subtitle = latex2exp::TeX('Based on (argmin($\\Psi$) + $5\\tau$) earlier than sunrise'),
+    color = 'Rehydration\nTime (hrs)') +
+  theme_dark() +
+  theme(plot.background = element_blank(),
+    legend.background = element_blank())
+ggsave(width = 5, height = 2.4, dpi = 172, bg = 'transparent',
+  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_rehydration_time_series_5tau_less_than_sunrise.png')
