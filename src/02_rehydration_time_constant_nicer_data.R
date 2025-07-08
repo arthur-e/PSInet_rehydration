@@ -5,12 +5,16 @@ library(ggplot2)
 library(RColorBrewer)
 library(lubridate, warn.conflicts = F)
 library(bbmle, warn.conflicts = F)
+library(patchwork)
 
 JESSICA.CSV <- '~/Downloads/SRER_LATR_pdd_Apr_June.csv'
+REHYDRATION.CUTOFF <- 0.95
 
 facet.theme <- theme_linedraw() +
   theme(strip.background = element_blank(),
     strip.text = element_text(color = 'black', face = 'bold'))
+
+# TODO Examine how the timing of min, max psi changes over the season
 
 
 # Loading data #################################################################
@@ -31,48 +35,8 @@ ggplot(mapping = aes(x = hour, y = WP_m)) +
   geom_line() +
   facet_wrap(~ DOY, scales = 'free_x', nrow = 2)
 
-# Sun sets at 19h00, rises after 05h00 local time
-df.out <- df %>%
-  select(datetime, WP_m, DOY, hour) %>%
-  arrange(datetime, hour) %>%
-  filter(hour >= 19 | hour <= 6) %>%
-  group_by(DOY) %>%
-  # Transform hours into a number of hours past 19h00
-  mutate(t = if_else(hour < 19, hour + 24, hour) - 19) %>%
-  # Create an identifier for each unique evening period
-  # This is faster and can be done in a loop, but should be checked for
-  #   generality
-  mutate(datetime.rel = datetime - dhours(19),
-    DOY.rel = as.integer(format(datetime.rel, '%j')),
-    hour.rel = hour(datetime.rel) + minute(datetime.rel) / 60)
 
-# No longer necessary because of datetime.rel
-# Create an identifier for each unique evening period
-# df.out <- df.out %>%
-#   mutate(t.int = t - lag(t, 1),
-#     t.int = if_else(is.na(t.int), 0, t.int))
-# df.out$period <- 1
-# j <- 1
-# for (i in 2:nrow(df.out)) {
-#   if (df.out[i,]$t.int < 0) {
-#     j = j + 1
-#   }
-#   df.out[i,'period'] <- j
-# }
-
-df.out %>%
-  filter(DOY.rel %% 10 == 0) %>%
-ggplot(mapping = aes(x = datetime, y = WP_m)) +
-  geom_line() +
-  facet_wrap(~ DOY.rel, scales = 'free', ncol = 2)
-
-df.out %>%
-  filter(DOY.rel %% 10 == 0) %>%
-ggplot(mapping = aes(x = hour.rel, y = WP_m)) +
-  geom_line(aes(color = DOY.rel, group = DOY.rel))
-
-
-# Empirical determination of periods, extremes #################################
+# Rehydration period: Direct calculation #######################################
 
 # I want each day to start and end at 10h00 local, as this is (likely) before
 #   the minimum daily water potential
@@ -113,9 +77,6 @@ df.emp.agg <- df.emp %>%
     max.psi = max(WP_m),
     when.min = (hour.rel[which.min(WP_m)] + 10) %% 24,
     when.max = (hour.rel[which.max(WP_m)] + 10) %% 24) %>%
-  # Compare to 95% of previous day's maximum, as a kind of smoothing; note
-  #   that numerator and denom. are flipped because of negative values
-  mutate(rehydrated = (lag(max.psi, 1) / max.psi) >= 0.95) %>%
   # Then, compute how long it took to recharge
   mutate(diff = (24 - when.min) + when.max)
 
@@ -144,9 +105,34 @@ ggplot(mapping = aes(x = DOY.rel, y = diff)) +
 ggsave(width = 5, height = 4, dpi = 172, bg = 'white',
   file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_rehydration_time_series_empirical.png')
 
-# Diagnostic
+
+# Plotting rehydration period ##################################################
+
+df.cutoff <- data.frame(cutoff = seq(0.9, 1.1, 0.01), not.rehydrated.count = NA)
+for (cutoff in df.cutoff$cutoff) {
+  df.cutoff[df.cutoff$cutoff == cutoff,2] <- with(df.emp.agg %>%
+    mutate(rehydrated = (lag(max.psi, 1) / max.psi) >= cutoff) %>%
+    group_by(rehydrated) %>%
+    tally() %>%
+    filter(!rehydrated), n)
+}
+
+ggplot(df.cutoff, aes(x = cutoff, y = not.rehydrated.count / 90)) +
+  geom_bar(stat = 'identity') +
+  scale_x_continuous(labels = scales::percent) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = latex2exp::TeX('Pct. of Pre-Dawn Max $\\psi$ Considered "Full" Rehydration       '),
+    y = 'Days without "Full" Rehydration (%)') +
+  theme_minimal()
+ggsave(width = 4, height = 3, dpi = 172, bg = 'white',
+  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_rehydration_cutoff_barplot.png')
+
 df.emp %>%
-  left_join(df.emp.agg, by = 'DOY.rel') %>%
+  left_join(
+    # Compare to, e.g., 95% of previous day's maximum, as a kind of smoothing; note
+    #   that numerator and denom. are flipped because of negative values
+    mutate(df.emp.agg, rehydrated = (lag(max.psi, 1) / max.psi) >= REHYDRATION.CUTOFF),
+    by = 'DOY.rel') %>%
   filter(DOY.rel > 91, DOY.rel < 102) %>%
   mutate(DOY.rel = sprintf('DOY=%03d', DOY.rel)) %>%
   rename(`Rehydrated?` = rehydrated) %>%
@@ -166,7 +152,9 @@ ggsave(width = 7, height = 4.5, dpi = 172,
   file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_rehydration_time_series_relative_to_10h00_local.png')
 
 require(viridis)
-df.emp.agg %>%
+# Compare to, e.g., 95% of previous day's maximum, as a kind of smoothing; note
+#   that numerator and denom. are flipped because of negative values
+mutate(df.emp.agg, rehydrated = (lag(max.psi, 1) / max.psi) >= REHYDRATION.CUTOFF) %>%
   filter(!is.na(rehydrated)) %>%
   rename(`Rehydrated?` = rehydrated) %>%
   mutate(diff.psi = min.psi - max.psi) %>%
@@ -178,7 +166,9 @@ ggplot(mapping = aes(x = DOY.rel, y = `Rehydrated?`)) +
 ggsave(width = 5, height = 2, dpi = 172,
   file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_rehydration_time_series_dot_plot.png')
 
-df.emp.agg %>%
+# Compare to, e.g., 95% of previous day's maximum, as a kind of smoothing; note
+#   that numerator and denom. are flipped because of negative values
+mutate(df.emp.agg, rehydrated = (lag(max.psi, 1) / max.psi) >= REHYDRATION.CUTOFF) %>%
   filter(!is.na(rehydrated)) %>%
   rename(`Rehydrated?` = rehydrated) %>%
   mutate(diff.psi = min.psi - max.psi) %>%
@@ -196,8 +186,24 @@ ggplot(mapping = aes(x = `Rehydrated?`, y = value)) +
 ggsave(width = 6.5, height = 2.5, dpi = 172,
   file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_rehydration_status_and_covariates.png')
 
+# How far off are we from equilibrium each day?
+df.emp.agg %>%
+  filter(!is.na(max.psi)) %>%
+  mutate(perc.diff = -100 * ((max.psi - lag(max.psi, 1)) / lag(max.psi, 1))) %>%
+ggplot(mapping = aes(x = DOY.rel, y = perc.diff)) +
+  geom_bar(aes(fill = as.character(sign(perc.diff))), stat = 'identity') +
+  geom_hline(aes(yintercept = yint), color = '#333333', linetype = 'dashed',
+    data = data.frame(yint = c(-5, 5))) +
+  scale_x_continuous(expand = c(0, 0.5)) +
+  scale_fill_manual(values = brewer.pal(5, 'RdBu')[c(1,5)], guide = 'none') +
+  labs(y = latex2exp::TeX('Difference from Previous Pre-Dawn Maximum $\\psi$'),
+    x = 'Day of Year') +
+  theme_minimal()
+ggsave(width = 5, height = 4, dpi = 172, bg = 'white',
+  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_change_in_daily_max_WP.png')
 
-# Empirical determination, with smoothing ######################################
+
+# Rehydration period: Smoothing ################################################
 
 require(broom)
 require(purrr)
@@ -273,8 +279,7 @@ ggsave(width = 7, height = 4.5, dpi = 172,
   file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_example_time_series_smoothing_peak-ident_06hr.png')
 
 df.tmp.12 %>%
-  # filter(DOY == 91 | DOY %% 10 == 0) %>%
-  filter(DOY < 100) %>%
+  filter(DOY == 91 | DOY %% 10 == 0) %>%
   mutate(DOY = sprintf('DOY=%03d', DOY)) %>%
 ggplot(mapping = aes(x = hour)) +
   geom_line(aes(y = value), color = 'black', linewidth = 0.6) +
@@ -308,8 +313,9 @@ df.smoothing <- df.tmp.12 %>%
     min.psi = min(smoothed)) %>%
   # Compare to 95% of previous day's maximum, as a kind of smoothing; note
   #   that numerator and denom. are flipped because of negative values
-  mutate(rehydrated = (lag(max.psi, 1) / max.psi) >= 0.95)
+  mutate(rehydrated = (lag(max.psi, 1) / max.psi) >= REHYDRATION.CUTOFF)
 
+require(viridis)
 df.smoothing %>%
   filter(!is.na(rehydrated)) %>%
   rename(`Rehydrated?` = rehydrated) %>%
@@ -319,20 +325,22 @@ ggplot(mapping = aes(x = DOY.rel, y = `Rehydrated?`)) +
   scale_color_gradientn(colors = magma(10, direction = -1)) +
   labs(x = 'Day of Year', color = latex2exp::TeX('min($\\psi$)')) +
   theme_dark()
-ggsave(width = 5, height = 2, dpi = 172,
-  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_rehydration_time_series_dot_plot.png')
 
-
-
-# Identifying rehydration by discrete derivative ###############################
-
-df.emp %>%
-  group_by(DOY.rel) %>%
-  mutate(WP_fd = WP_m - lag(WP_m, 1),
-    WP_fd_perc = -100 * (WP_fd / WP_m)) %>%
-  mutate(eq = if_else(WP_fd_perc > 0,
-    if_else(WP_fd_perc <= 1, TRUE, FALSE), FALSE)) %>%
-  View
+# How far off are we from equilibrium each day?
+df.smoothing %>%
+  filter(!is.na(max.psi)) %>%
+  mutate(perc.diff = -100 * ((max.psi - lag(max.psi, 1)) / lag(max.psi, 1))) %>%
+ggplot(mapping = aes(x = DOY.rel, y = perc.diff)) +
+  geom_bar(aes(fill = as.character(sign(perc.diff))), stat = 'identity') +
+  geom_hline(aes(yintercept = yint), color = '#333333', linetype = 'dashed',
+    data = data.frame(yint = c(-5, 5))) +
+  scale_x_continuous(expand = c(0, 0.5)) +
+  scale_fill_manual(values = brewer.pal(5, 'RdBu')[c(1,5)], guide = 'none') +
+  labs(y = latex2exp::TeX('Difference from Previous Pre-Dawn Maximum $\\psi$'),
+    x = 'Day of Year') +
+  theme_minimal()
+ggsave(width = 5, height = 4, dpi = 172, bg = 'white',
+  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_change_in_daily_max_WP_from_smoothing.png')
 
 
 # Model fitting framework ######################################################
@@ -344,28 +352,125 @@ rmse <- function (observed, predicted) {
   return((1/n) * sum(sqrt((predicted - observed)^2), na.rm = T))
 }
 
-target.func <- function (t, pd = -2, tau = 4) {
+model.exp <- function (t, pd = -2, tau = 4) {
+  # Note this is 1 + ... instead of 1 - ... because WP is negative
   return(pd * (1 + exp(-t / tau)))
 }
 
-wrap.rmse <- function (pd, tau, df = df) {
+# Our objective function, calculating RMSE based on model predictions
+rmse.model.exp <- function (params, df = df.out) {
   t <- df$t
-  psi <- target.func(t, pd, tau)
+  pd <- params[1]
+  tau <- params[2]
+  psi <- model.exp(t, pd, tau)
   return(rmse(df$WP_m, psi))
 }
 
-plot.function(target.func, from = 0, to = 24, bty = 'n', xlab = 'Hour (Local Time)',
-  ylab = 'Water Potential (MPa)', lwd = 2)
+# The idealized function we're trying to fit
+plot.function(model.exp, from = 0, to = 24, bty = 'n', xlab = 'Hour (Local Time)',
+  ylab = 'Water Potential (MPa)', lwd = 2, xaxt = 'n')
+axis(1, at = seq(0, 20, 5), labels = c(16, 20, 24, 4, 8))
 
 
 # Fitting model parameters with optim ##########################################
 
-# df.out <-
-# result <- optim(c(-2, 2), wrap.rmse,
-#   method = 'L-BFGS-B', lower = c(-9, 1), upper = c(0, 24))
+# Sun sets at 19h00, rises after 05h00 local time, but stomata tend to close
+#   early due to stress, so we'll start the clock at ??h00
+HOUR.START <- 14
+HOUR.END <- 7
+df.out <- df %>%
+  select(datetime, WP_m, DOY, hour) %>%
+  arrange(datetime, hour) %>%
+  filter(hour >= HOUR.START | hour <= HOUR.END) %>%
+  group_by(DOY) %>%
+  # Transform hours into a number of hours past HOUR.START
+  mutate(t = if_else(hour < HOUR.START, hour + 24, hour) - HOUR.START) %>%
+  # Create an identifier for each unique evening period
+  # This is faster and can be done in a loop, but should be checked for
+  #   generality
+  mutate(datetime.rel = datetime - dhours(HOUR.START),
+    DOY.rel = as.integer(format(datetime.rel, '%j')),
+    hour.rel = hour(datetime.rel) + minute(datetime.rel) / 60)
 
-# require(broom)
-# require(purrr)
-# df %>%
-#   nest(data = -DOY) %>%
-#   mutate(fit = map(data, ~ lm(WP_m ~
+# Diagnostics
+df.out %>%
+  filter(DOY.rel %% 10 == 0) %>%
+ggplot(mapping = aes(x = datetime, y = WP_m)) +
+  geom_line() +
+  facet_wrap(~ DOY.rel, scales = 'free', ncol = 2)
+
+df.out %>%
+  filter(DOY.rel %% 10 == 0) %>%
+ggplot(mapping = aes(x = hour.rel, y = WP_m)) +
+  geom_line(aes(color = DOY.rel, group = DOY.rel)) +
+  # Change X-axis so that the "day" starts at 10h00 local time
+  scale_x_continuous(expand = c(0, 0), breaks = seq(2, 24, 6),
+    labels = function (x) { (x + HOUR.START) %% 24 })
+
+# A data frame with the unique DOYs
+df.doy <- df.out %>%
+  group_by(DOY.rel) %>%
+  summarize()
+fit.params <- matrix(nrow = length(df.doy$DOY.rel), ncol = 3)
+fit.scores <- matrix(nrow = nrow(fit.params), ncol = 1)
+for (i in 1:nrow(fit.params)) {
+  doy <- df.doy$DOY.rel[i]
+  df.sub <- filter(df.out, DOY.rel == doy)
+  if (nrow(df.sub) == 0) next() # Skip empty subsets
+  wrap.rmse <- function (params) {
+    rmse.model.exp(params, df = df.sub)
+  }
+  result <- optim(c(-2, 2), wrap.rmse,
+    method = 'L-BFGS-B', lower = c(-9, 1), upper = c(0, 24))
+    # control = list(pgtol = 0.01))
+  fit.params[i,1] <- doy
+  fit.params[i,2:3] <- result$par
+  fit.scores[i,] <- wrap.rmse(result$par)
+}
+
+df.params <- bind_cols(
+  as.data.frame(fit.params) %>%
+    rename(DOY.rel = V1, psi0 = V2, tau = V3),
+  as.data.frame(fit.scores) %>%
+    rename(RMSE = V1))
+
+df.params %>%
+ggplot(mapping = aes(x = DOY.rel, y = RMSE)) +
+  geom_bar(stat = 'identity') +
+  scale_x_continuous(expand = c(0, 0)) +
+  labs(x = 'Day of Year', y = 'Model RMSE (MPa)') +
+  theme_minimal()
+ggsave(width = 6.5, height = 3, dpi = 172, bg = 'white',
+  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_RC_circuit_model_RMSE_barplot.png')
+
+i <- 1
+g1 <- NULL
+for (doy in df.params$DOY.rel) {
+  if (doy == 90 | doy %% 10 != 0) next()
+  g0 <- df.out %>%
+    filter(DOY.rel == doy) %>%
+    mutate(DOY.rel = sprintf('DOY=%03d', DOY.rel)) %>%
+  ggplot(mapping = aes(x = hour.rel)) +
+    geom_line(aes(y = WP_m), color = 'black', linewidth = 0.6) +
+    # Change X-axis so that the "day" starts at 10h00 local time
+    scale_x_continuous(expand = c(0, 0), breaks = seq(2, 24, 6),
+      labels = function (x) { (x + 14) %% 24 }) +
+    # scale_y_continuous(limits = c(-10, -2)) +
+    labs(subtitle = sprintf('DOY=%03d', doy),
+      x = 'Hour of Day (Local Time)', y = 'Water Potential (MPa)')
+
+  g0 <- g0 + with(filter(df.params, DOY.rel == doy),
+      geom_function(fun = model.exp, n = 1000, xlim = c(0, 16),
+        args = list(pd = psi0, tau = tau), linetype = 'dashed', color = 'red'))
+
+  if (i == 1) {
+    g1 <- g0
+  } else {
+    g1 <- g1 + g0
+  }
+  i <- 1 + 1
+}
+
+g1 + plot_layout(nrow = 3, axis_titles = 'collect')
+ggsave(width = 7, height = 4.5, dpi = 172,
+  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_RC_circuit_model_fits.png')
