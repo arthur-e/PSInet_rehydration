@@ -8,7 +8,8 @@ library(bbmle, warn.conflicts = F)
 library(patchwork)
 library(reticulate)
 
-JESSICA.CSV <- '~/Downloads/SRER_LATR_pdd_Apr_June.csv'
+JESSICA.CSV <- '~/Downloads/PSInet/SRER_LATR_pdd_Apr_June.csv'
+MET.CSV <- '~/Downloads/PSInet/neon_atmdaily.csv'
 REHYDRATION.CUTOFF <- 0.95
 
 facet.theme <- theme_linedraw() +
@@ -27,8 +28,14 @@ suntransit <- import('suntransit')
 
 # Loading data #################################################################
 
+df.met <- read.csv(MET.CSV) %>%
+  # Roll back "midnight" to 10h00 local
+  mutate(date.rel = as.Date(date) - dhours(10),
+    DOY.rel = as.integer(format(date.rel, '%j')))
+
 df <- read.csv(JESSICA.CSV) %>%
-  mutate(datetime = ymd_hms(dt)) %>%
+  mutate(date = as.Date(date),
+    datetime = ymd_hms(dt)) %>%
   rowwise() %>%
   mutate(datetime = with_tz(datetime, tzone = 'America/Phoenix')) %>%
   mutate(hour = hour(datetime) + minute(datetime) / 60,
@@ -49,13 +56,14 @@ ggplot(mapping = aes(x = hour, y = WP_m)) +
 # I want each day to start and end at 10h00 local, as this is (likely) before
 #   the minimum daily water potential
 df.emp <- df %>%
-  select(datetime, DOY, hour, WP_m, WP_sd) %>%
+  select(datetime, date, DOY, hour, WP_m, WP_sd) %>%
   # Roll back "midnight" to 10h00 local
   mutate(datetime.rel = datetime - dhours(10),
     DOY.rel = as.integer(format(datetime.rel, '%j')),
     hour.rel = hour(datetime.rel) + minute(datetime.rel) / 60) %>%
   filter(DOY.rel > 90) %>%
-  arrange(datetime)
+  arrange(datetime) %>%
+  left_join(df.met, by = 'date')
 
 # Diagnostics
 # NOTE: It's apparent that rehydration must occur in less than 24 hours
@@ -198,7 +206,10 @@ ggsave(width = 6.5, height = 2.5, dpi = 172,
 df.emp.agg %>%
   filter(!is.na(max.psi)) %>%
   mutate(perc.diff = -100 * ((max.psi - lag(max.psi, 1)) / lag(max.psi, 1))) %>%
+  left_join(df.met, by = 'DOY.rel') %>%
+  mutate(rain = if_else(ppt_mm > 1, DOY.rel, NA)) %>%
 ggplot(mapping = aes(x = DOY.rel, y = perc.diff)) +
+  geom_vline(aes(xintercept = rain), color = 'darkblue', linetype = 'dotted') +
   geom_bar(aes(fill = as.character(sign(perc.diff))), stat = 'identity') +
   geom_hline(aes(yintercept = yint), color = '#333333', linetype = 'dashed',
     data = data.frame(yint = c(-5, 5))) +
@@ -208,7 +219,7 @@ ggplot(mapping = aes(x = DOY.rel, y = perc.diff)) +
     x = 'Day of Year') +
   theme_minimal()
 ggsave(width = 5, height = 4, dpi = 172, bg = 'white',
-  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_change_in_daily_max_WP.png')
+  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_change_in_daily_max_WP_alt.png')
 
 
 # Change in rehydration time? ##################################################
@@ -371,7 +382,10 @@ ggplot(mapping = aes(x = DOY.rel, y = `Rehydrated?`)) +
 df.smoothing %>%
   filter(!is.na(max.psi)) %>%
   mutate(perc.diff = -100 * ((max.psi - lag(max.psi, 1)) / lag(max.psi, 1))) %>%
+  left_join(df.met, by = 'DOY.rel') %>%
+  mutate(rain = if_else(ppt_mm > 1, DOY.rel, NA)) %>%
 ggplot(mapping = aes(x = DOY.rel, y = perc.diff)) +
+  geom_vline(aes(xintercept = rain), color = 'darkblue', linetype = 'dotted') +
   geom_bar(aes(fill = as.character(sign(perc.diff))), stat = 'identity') +
   geom_hline(aes(yintercept = yint), color = '#333333', linetype = 'dashed',
     data = data.frame(yint = c(-5, 5))) +
@@ -381,7 +395,7 @@ ggplot(mapping = aes(x = DOY.rel, y = perc.diff)) +
     x = 'Day of Year') +
   theme_minimal()
 ggsave(width = 5, height = 4, dpi = 172, bg = 'white',
-  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_change_in_daily_max_WP_from_smoothing.png')
+  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_change_in_daily_max_WP_from_smoothing_alt.png')
 
 
 # Model fitting framework ######################################################
@@ -480,13 +494,17 @@ df.params <- bind_cols(
     rename(RMSE = V1))
 
 df.params %>%
+  left_join(df.met, by = 'DOY.rel') %>%
+  mutate(rain = if_else(ppt_mm > 1, DOY.rel, NA)) %>%
 ggplot(mapping = aes(x = DOY.rel, y = RMSE)) +
+  geom_vline(aes(xintercept = rain), color = 'darkblue', linetype = 'dotted',
+    linewidth = 1) +
   geom_bar(stat = 'identity') +
   scale_x_continuous(expand = c(0, 0)) +
   labs(x = 'Day of Year', y = 'Model RMSE (MPa)') +
   theme_minimal()
 ggsave(width = 6.5, height = 3, dpi = 172, bg = 'white',
-  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_RC_circuit_model_RMSE_barplot.png')
+  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_RC_circuit_model_RMSE_barplot_alt.png')
 
 i <- 1
 g1 <- NULL
