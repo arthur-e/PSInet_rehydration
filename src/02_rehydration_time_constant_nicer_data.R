@@ -62,8 +62,7 @@ df.emp <- df %>%
     DOY.rel = as.integer(format(datetime.rel, '%j')),
     hour.rel = hour(datetime.rel) + minute(datetime.rel) / 60) %>%
   filter(DOY.rel > 90) %>%
-  arrange(datetime) %>%
-  left_join(df.met, by = 'date')
+  arrange(datetime)
 
 # Diagnostics
 # NOTE: It's apparent that rehydration must occur in less than 24 hours
@@ -508,7 +507,8 @@ ggsave(width = 6.5, height = 3, dpi = 172, bg = 'white',
 
 i <- 1
 g1 <- NULL
-for (doy in df.params$DOY.rel) {
+# for (doy in df.params$DOY.rel) {
+for (doy in 100:111) {
   if (doy == 90 | doy %% 10 != 0) next()
   g0 <- df.out %>%
     filter(DOY.rel == doy) %>%
@@ -537,9 +537,6 @@ for (doy in df.params$DOY.rel) {
 g1 + plot_layout(nrow = 3, axis_titles = 'collect')
 ggsave(width = 7, height = 4.5, dpi = 172,
   file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_RC_circuit_model_fits.png')
-
-df.emp.agg %>%
-  head
 
 # 5-tau analysis
 df.params %>%
