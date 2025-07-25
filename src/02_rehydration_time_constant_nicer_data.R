@@ -85,6 +85,19 @@ ggplot(mapping = aes(x = hour.rel, y = WP_m)) +
 ggsave(width = 7, height = 4.5, dpi = 172,
   file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_example_time_series_relative_to_10h00_local.png')
 
+df.emp %>%
+  filter(DOY.rel %in% 92:100) %>%
+  mutate(DOY.rel = sprintf('DOY=%03d', DOY.rel)) %>%
+ggplot(mapping = aes(x = hour.rel, y = WP_m)) +
+  geom_line() +
+  facet_wrap(~ DOY.rel, nrow = 1, scales = 'free_x') +
+  scale_x_continuous(expand = c(0, 0), breaks = seq(2, 24, 6),
+    labels = function (x) { (x + 10) %% 24 }) +
+  labs(x = 'Hour of Day (Local Time)', y = 'Water Potential (MPa)') +
+  facet.theme
+ggsave(width = 7.5, height = 3, dpi = 172,
+  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_example_time_series_raw_data.png')
+
 # Compute daily min, max water potential and when that is achieved
 df.emp.agg <- df.emp %>%
   group_by(DOY.rel) %>%
