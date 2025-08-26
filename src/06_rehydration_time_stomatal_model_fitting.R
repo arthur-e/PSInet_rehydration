@@ -5,7 +5,9 @@ library(ggplot2)
 library(RColorBrewer)
 library(lubridate, warn.conflicts = F)
 library(bbmle, warn.conflicts = F)
+library(reticulate)
 library(patchwork)
+library(latex2exp)
 
 JESSICA.CSV <- '~/Downloads/PSInet/SRER_LATR_pdd_Apr_June.csv'
 MET.CSV <- '~/Downloads/PSInet/neon_atmdaily.csv'
@@ -14,6 +16,13 @@ SWGDN.CSV <- '/home/arthur.endsley/Workspace/NTSG/projects/Y2026_PSInet/data/202
 facet.theme <- theme_linedraw() +
   theme(strip.background = element_blank(),
     strip.text = element_text(color = 'black', face = 'bold'))
+
+require(reticulate)
+if (Sys.info()['nodename'] == 'Gullveig') {
+  use_python('/usr/local/python-env/suntransit/bin/python')
+} else {
+}
+suntransit <- import('suntransit')
 
 
 # Loading data #################################################################
@@ -74,7 +83,7 @@ df.emp.agg <- df.emp %>%
 HOUR.START <- 12
 HOUR.END <- 8
 df.out <- df %>%
-  select(datetime, WP_m, PAR.MJm2, DOY, hour) %>%
+  select(datetime, WP_m, WP_sd, PAR.MJm2, DOY, hour) %>%
   arrange(datetime, hour) %>%
   filter(hour >= HOUR.START | hour <= HOUR.END) %>%
   group_by(DOY) %>%
@@ -102,6 +111,11 @@ df.clean <- df.out %>%
   group_by(DOY.rel) %>%
   mutate(Dmean = median(Dmean, na.rm = T)) %>%
   fill(PAR.MJm2, .direction = 'downup')
+
+# Filter each time series to *just* those hours *after* the minimum WP is reached
+df.clean.min <- df.clean %>%
+  group_by(DOY.rel) %>%
+  filter(hour.rel >= hour.rel[which.min(WP_m)])
 
 
 # Tom's model (example) ########################################################
@@ -136,7 +150,7 @@ rmse <- function (observed, predicted) {
   return((1/n) * sum(sqrt((predicted - observed)^2), na.rm = T))
 }
 
-rmse.model.stomatal <- function (params, df = df.clean) {
+rmse.model.stomatal <- function (params, df = df.clean.min) {
   ts <- df$t
   vpd <- df$Dmean
   irr <- df$PAR.MJm2
@@ -161,14 +175,14 @@ rmse.model.stomatal <- function (params, df = df.clean) {
 # Fitting the model ############################################################
 
 # A data frame with the unique DOYs
-df.doy <- df.clean %>%
+df.doy <- df.clean.min %>%
   group_by(DOY.rel) %>%
   summarize()
 fit.params <- matrix(nrow = length(df.doy$DOY.rel), ncol = 1 + 5)
 fit.scores <- matrix(nrow = nrow(fit.params), ncol = 1)
 for (i in 1:nrow(fit.params)) {
   doy <- df.doy$DOY.rel[i]
-  df.sub <- filter(df.clean, DOY.rel == doy)
+  df.sub <- filter(df.clean.min, DOY.rel == doy)
   if (nrow(df.sub) == 0) next() # Skip empty subsets
   wrap.rmse <- function (params) {
     rmse.model.stomatal(params, df = df.sub)
@@ -188,29 +202,18 @@ df.params <- bind_cols(
   as.data.frame(fit.scores) %>%
     rename(RMSE = V1)) %>%
   # NOTE: We need dynamic inputs for this function
-  right_join(df.clean, by = 'DOY.rel')
+  right_join(df.clean.min, by = 'DOY.rel')
 
 
 # Plotting results #############################################################
 
-df.params %>%
-  left_join(df.met, by = 'DOY.rel') %>%
-  mutate(rain = if_else(ppt_mm > 1, DOY.rel, NA)) %>%
-ggplot(mapping = aes(x = DOY.rel, y = RMSE)) +
-  geom_vline(aes(xintercept = rain), color = 'darkblue', linetype = 'dotted',
-    linewidth = 1) +
-  geom_bar(stat = 'identity') +
-  scale_x_continuous(expand = c(0, 0)) +
-  labs(x = 'Day of Year', y = 'Model RMSE (MPa)') +
-  theme_minimal()
-# ggsave(width = 6.5, height = 3, dpi = 172, bg = 'white',
-#   file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/20250707_RC_circuit_model_RMSE_barplot_alt.png')
+with(df.params, barplot(RMSE, names.arg = DOY.rel, xlab = 'Day of Year', ylab = 'RMSE (MPa)'))
 
 i <- 1
 g1 <- NULL
 # for (doy in df.params$DOY.rel) {
-for (doy in 100:111) {
-  g0 <- df.clean %>%
+for (doy in seq(110, 180, 10)) {
+  g0 <- df.clean.min %>%
     filter(DOY.rel == doy) %>%
     mutate(DOY.rel = sprintf('DOY=%03d', DOY.rel)) %>%
   ggplot(mapping = aes(x = hour.rel)) +
@@ -218,16 +221,17 @@ for (doy in 100:111) {
     # Change X-axis so that the "day" starts at 10h00 local time
     scale_x_continuous(expand = c(0, 0), breaks = seq(2, 24, 6),
       labels = function (x) { (x + 14) %% 24 }) +
-    scale_y_continuous(limits = c(-6, -2)) +
+    scale_y_continuous(limits = c(-9, -2)) +
     labs(subtitle = sprintf('DOY=%03d', doy),
       x = 'Hour of Day (Local Time)', y = 'Water Potential (MPa)')
 
   g0 <- g0 + with(filter(df.params, DOY.rel == doy),
-      geom_function(fun = model.stomatal, n = max(df.clean$t), xlim = c(0, max(df.clean$t)),
-      # NOTE: Static inputs are indexed at their first value
-      args = list(vpd = Dmean, irr = PAR.MJm2, psi0 = WP_m[1],
-        tau = tau[1], psi.source = psi.source[1], k = k[1], c1 = c1[1], c2 = c2[1]),
-      linetype = 'dashed', color = 'red'))
+      geom_function(fun = model.stomatal, n = max(t) - min(t),
+        xlim = c(min(t), max(t)),
+        # NOTE: Static inputs are indexed at their first value
+        args = list(vpd = Dmean, irr = PAR.MJm2, psi0 = WP_m[1],
+          tau = tau[1], psi.source = psi.source[1], k = k[1], c1 = c1[1], c2 = c2[1]),
+        linetype = 'dashed', color = 'red'))
   g0 <- g0 + geom_hline(aes(yintercept = psi.source), color = 'blue',
     linetype = 'dashed', data = filter(df.params, DOY.rel == doy))
 
@@ -239,6 +243,105 @@ for (doy in 100:111) {
   i <- 1 + 1
 }
 
-g1 + plot_layout(nrow = 3, axis_titles = 'collect')
-ggsave(width = 6.5, height = 5.5, dpi = 172,
-  file = '~/Downloads/initial_Buckley_model_fit_by_DOY.png')
+g1 + plot_layout(nrow = 2, axis_titles = 'collect')
+ggsave(width = 6.5, height = 5, dpi = 172,
+  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/Buckley_model_fits_examples2.png')
+
+
+# Model inference ##############################################################
+
+g2 <- df.params %>%
+  mutate(date = as.Date(sprintf('2023-%03d', DOY.rel), '%Y-%j')) %>%
+  group_by(DOY.rel, date) %>%
+  filter(n() > 3) %>%
+  summarize(tau = first(tau), psi.source = first(psi.source)) %>%
+  gather(key = Parameter, value = value, -DOY.rel:-date) %>%
+  left_join(select(df.met, DOY.rel, ppt_mm), by = 'DOY.rel') %>%
+  mutate(precip = if_else(ppt_mm > 0, date, NA)) %>%
+  mutate(Parameter = if_else(str_detect(Parameter, 'tau'), 'tau~paste("(hours)")', 'Psi[0]~paste("(MPa)")')) %>%
+  group_by(DOY.rel) %>%
+  # America/Phoenix is GMT-07
+  mutate(sunrise = (unlist(suntransit$sunrise_sunset(
+    c(33, -112), dt = date[1]))[1] - 7) %% 24) %>%
+  mutate(sunset = (unlist(suntransit$sunrise_sunset(
+    c(33, -112), dt = date[1]))[2] - 7) %% 24) %>%
+  mutate(daylight = if_else(str_detect(Parameter, 'tau'), sunset - sunrise, NA),
+    nighttime = if_else(str_detect(Parameter, 'tau'), (24 - sunset) + sunrise, NA)) %>%
+ggplot(mapping = aes(x = date, y = value)) +
+  # geom_area(aes(y = daylight), fill = '#ffcc00', alpha = 0.5) +
+  geom_area(aes(y = nighttime), fill = 'azure3', alpha = 0.6) +
+  geom_vline(aes(xintercept = precip), color = 'darkblue', linetype = 'dashed') +
+  geom_line(aes(color = Parameter), linewidth = 0.6) +
+  facet_wrap(~ Parameter, ncol = 1, strip.position = 'right',
+    labeller = label_parsed, scales = 'free_y') +
+  scale_color_manual(values = c('black', brewer.pal(5, 'RdBu')[1])) +
+  scale_x_date(expand = c(0, 0), date_labels = '%b %d') +
+  labs(x = NULL, y = NULL) +
+  guides(color = 'none', fill = 'none') +
+  facet.theme +
+  theme(text = element_text(size = 14), panel.spacing = unit(1, 'lines'))
+g2
+ggsave(width = 4, height = 5.5, dpi = 172,
+  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/Buckley_model_parameter_time_series.png')
+g2 + facet_wrap(~ Parameter, ncol = 2, strip.position = 'top',
+    labeller = label_parsed, scales = 'free_y')
+ggsave(width = 6.5, height = 3.5, dpi = 172,
+  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/Buckley_model_parameter_time_series_wide.png')
+
+
+# TODO Add standard deviation of WP measurements
+df.params %>%
+  mutate(date = as.Date(sprintf('2023-%03d', DOY.rel), '%Y-%j')) %>%
+  left_join(select(df.out, DOY.rel, hour.rel, WP_sd), by = c('DOY.rel', 'hour.rel')) %>%
+  group_by(DOY.rel, date) %>%
+  filter(n() > 3) %>%
+  summarize(
+    psi.source = first(psi.source),
+    psi0 = WP_m[1],
+    max.psi = max(WP_m)) %>%
+  gather(key = Metric, value = value, -DOY.rel:-date) %>%
+  mutate(Metric = if_else(str_detect(Metric, 'source'), 'psi[source]',
+    if_else(str_detect(Metric, 'max'), 'psi[max]', 'psi[min]'))) %>%
+  left_join(select(df.met, DOY.rel, ppt_mm), by = 'DOY.rel') %>%
+  mutate(precip = if_else(ppt_mm > 0, date, NA)) %>%
+ggplot(mapping = aes(x = date, y = value)) +
+  geom_vline(aes(xintercept = precip), color = 'darkblue', linetype = 'dashed') +
+  geom_line(aes(color = Metric)) +
+  scale_x_date(expand = c(0, 0)) +
+  scale_color_manual(values = c(brewer.pal(5, 'RdBu')[c(5,1)], 'black'),
+    labels = parse(text = c('psi[max]', 'psi[min]', 'psi[source]'))) +
+  guides(color = guide_legend('Water Potential')) +
+  labs(x = NULL, y = 'Water Potential (MPa)') +
+  theme_bw() +
+  theme(text = element_text(size = 14),
+    legend.position = 'top',
+    legend.margin = margin(0, 0, -0.3, 0, 'cm'))
+ggsave(width = 6, height = 4.5, dpi = 172,
+  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/Buckley_model_WP_source_sink_time_series.png')
+
+
+df.params %>%
+  mutate(date = as.Date(sprintf('2023-%03d', DOY.rel), '%Y-%j')) %>%
+  group_by(DOY.rel, date) %>%
+  filter(n() > 3) %>%
+  summarize(psi.source = first(psi.source),
+    psi0 = WP_m[1],
+    max.psi = max(WP_m)) %>%
+  mutate(diff = max.psi - psi.source) %>%
+  left_join(select(df.met, DOY.rel, ppt_mm), by = 'DOY.rel') %>%
+  mutate(precip = if_else(ppt_mm > 0, date, NA)) %>%
+ggplot(mapping = aes(x = date, y = diff)) +
+  geom_vline(aes(xintercept = precip), color = 'darkblue', linetype = 'dashed') +
+  geom_bar(stat = 'identity') +
+  scale_x_date(expand = c(0, 0)) +
+  scale_color_manual(values = c(brewer.pal(5, 'RdBu')[c(5,1)], 'black'),
+    labels = parse(text = c('psi[max]', 'psi[min]', 'psi[source]'))) +
+  guides(color = guide_legend('Water Potential')) +
+  labs(x = NULL, y = 'Difference in Water Potential (MPa)',
+    subtitle = TeX('Difference: $\\Psi_{max} - \\Psi_{source}$')) +
+  theme_bw() +
+  theme(
+    legend.position = 'top',
+    legend.margin = margin(0, 0, -0.3, 0, 'cm'))
+ggsave(width = 6, height = 4, dpi = 172,
+  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/Buckley_model_WP_diff_max_minus_source_time_series.png')
