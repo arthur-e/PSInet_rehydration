@@ -3,7 +3,7 @@ library(tidyr)
 library(ggplot2)
 library(lubridate)
 
-JESSICA.CSV <- '~/Downloads/all_auto_joined.csv'
+JESSICA.CSV <- '~/Downloads/PSInet/all_auto_joined.csv'
 
 df <- read.csv(JESSICA.CSV) %>%
   select(indiv.id = individual_id, plot.id = plot_id, sensor_id, date, time,

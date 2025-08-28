@@ -57,27 +57,6 @@ df <- read.csv(JESSICA.CSV) %>%
   #   where the numerator is 1800 secs per half-hour and denom. is 1e6 J
   mutate(PAR.MJm2 = (1800 / 1e6) * PAR.Wm2)
 
-# I want each day to start and end at 10h00 local, as this is (likely) before
-#   the minimum daily water potential
-df.emp <- df %>%
-  select(datetime, date, DOY, hour, WP_m, WP_sd) %>%
-  # Roll back "midnight" to 10h00 local
-  mutate(datetime.rel = datetime - dhours(10),
-    DOY.rel = as.integer(format(datetime.rel, '%j')),
-    hour.rel = hour(datetime.rel) + minute(datetime.rel) / 60) %>%
-  filter(DOY.rel > 90) %>%
-  arrange(datetime)
-
-# Compute daily min, max water potential and when that is achieved
-df.emp.agg <- df.emp %>%
-  group_by(DOY.rel) %>%
-  summarize(min.psi = min(WP_m),
-    max.psi = max(WP_m),
-    when.min = (hour.rel[which.min(WP_m)] + 10) %% 24,
-    when.max = (hour.rel[which.max(WP_m)] + 10) %% 24) %>%
-  # Then, compute how long it took to recharge
-  mutate(diff = (24 - when.min) + when.max)
-
 # Sun sets at 19h00, rises after 05h00 local time, but stomata tend to close
 #   early due to stress, so we'll start the clock at ??h00
 HOUR.START <- 12
@@ -99,11 +78,11 @@ df.out <- df %>%
   ungroup()
 
 # Diagnostics
-df.out %>%
-  filter(DOY.rel %% 10 == 0) %>%
-ggplot(mapping = aes(x = datetime, y = WP_m)) +
-  geom_line() +
-  facet_wrap(~ DOY.rel, scales = 'free', ncol = 2)
+# df.out %>%
+#   filter(DOY.rel %% 10 == 0) %>%
+# ggplot(mapping = aes(x = datetime, y = WP_m)) +
+#   geom_line() +
+#   facet_wrap(~ DOY.rel, scales = 'free', ncol = 2)
 
 # Interpolating met data
 df.clean <- df.out %>%
@@ -345,3 +324,19 @@ ggplot(mapping = aes(x = date, y = diff)) +
     legend.margin = margin(0, 0, -0.3, 0, 'cm'))
 ggsave(width = 6, height = 4, dpi = 172,
   file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/Buckley_model_WP_diff_max_minus_source_time_series.png')
+
+
+# How does tau very with WP? ###################################################
+
+df.params %>%
+  group_by(DOY.rel) %>%
+  filter(n() > 3) %>%
+  summarize(tau = first(tau),
+    psi.source = first(psi.source),
+    psi0 = WP_m[1],
+    max.psi = max(WP_m),
+    mean.psi = mean(WP_m)) %>%
+  gather(key = Parameter, value = value, -DOY.rel:-tau) %>%
+ggplot(mapping = aes(x = tau, y = value)) +
+  geom_point() +
+  facet_wrap(~ Parameter)
