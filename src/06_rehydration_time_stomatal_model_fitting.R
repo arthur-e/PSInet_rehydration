@@ -67,7 +67,7 @@ df.out <- df %>%
   filter(hour >= HOUR.START | hour <= HOUR.END) %>%
   group_by(DOY) %>%
   # Transform hours into a number of hours past HOUR.START
-  mutate(t = if_else(hour < HOUR.START, hour + 24, hour) - HOUR.START) %>%
+  # mutate(t = if_else(hour < HOUR.START, hour + 24, hour) - HOUR.START) %>%
   # Create an identifier for each unique evening period
   # This is faster and can be done in a loop, but should be checked for
   #   generality
@@ -94,7 +94,9 @@ df.clean <- df.out %>%
 # Filter each time series to *just* those hours *after* the minimum WP is reached
 df.clean.min <- df.clean %>%
   group_by(DOY.rel) %>%
-  filter(hour.rel >= hour.rel[which.min(WP_m)])
+  filter(hour.rel >= hour.rel[which.min(WP_m)]) %>%
+  # Transform hours into a number of hours past HOUR.START
+  mutate(t = hour.rel - min(hour.rel))
 
 
 # Tom's model (example) ########################################################
@@ -206,7 +208,7 @@ for (doy in seq(110, 180, 10)) {
 
   g0 <- g0 + with(filter(df.params, DOY.rel == doy),
       geom_function(fun = model.stomatal, n = max(t) - min(t),
-        xlim = c(min(t), max(t)),
+        xlim = c(min(hour.rel), max(hour.rel)),
         # NOTE: Static inputs are indexed at their first value
         args = list(vpd = Dmean, irr = PAR.MJm2, psi0 = WP_m[1],
           tau = tau[1], psi.source = psi.source[1], k = k[1], c1 = c1[1], c2 = c2[1]),
@@ -223,8 +225,8 @@ for (doy in seq(110, 180, 10)) {
 }
 
 g1 + plot_layout(nrow = 2, axis_titles = 'collect')
-ggsave(width = 6.5, height = 5, dpi = 172,
-  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/Buckley_model_fits_examples2.png')
+# ggsave(width = 6.5, height = 5, dpi = 172,
+#   file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/Buckley_model_fits_examples2.png')
 
 
 # Model inference ##############################################################
@@ -260,12 +262,12 @@ ggplot(mapping = aes(x = date, y = value)) +
   facet.theme +
   theme(text = element_text(size = 14), panel.spacing = unit(1, 'lines'))
 g2
-ggsave(width = 4, height = 5.5, dpi = 172,
-  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/Buckley_model_parameter_time_series.png')
+# ggsave(width = 4, height = 5.5, dpi = 172,
+#   file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/Buckley_model_parameter_time_series.png')
 g2 + facet_wrap(~ Parameter, ncol = 2, strip.position = 'top',
     labeller = label_parsed, scales = 'free_y')
-ggsave(width = 6.5, height = 3.5, dpi = 172,
-  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/Buckley_model_parameter_time_series_wide.png')
+# ggsave(width = 6.5, height = 3.5, dpi = 172,
+#   file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/Buckley_model_parameter_time_series_wide.png')
 
 
 # TODO Add standard deviation of WP measurements
@@ -295,8 +297,8 @@ ggplot(mapping = aes(x = date, y = value)) +
   theme(text = element_text(size = 14),
     legend.position = 'top',
     legend.margin = margin(0, 0, -0.3, 0, 'cm'))
-ggsave(width = 6, height = 4.5, dpi = 172,
-  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/Buckley_model_WP_source_sink_time_series.png')
+# ggsave(width = 6, height = 4.5, dpi = 172,
+#   file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/Buckley_model_WP_source_sink_time_series.png')
 
 
 df.params %>%
@@ -322,8 +324,8 @@ ggplot(mapping = aes(x = date, y = diff)) +
   theme(
     legend.position = 'top',
     legend.margin = margin(0, 0, -0.3, 0, 'cm'))
-ggsave(width = 6, height = 4, dpi = 172,
-  file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/Buckley_model_WP_diff_max_minus_source_time_series.png')
+# ggsave(width = 6, height = 4, dpi = 172,
+#   file = '~/Workspace/NTSG/projects/Y2026_PSInet/outputs/rehydration_time_disequilibrium/Buckley_model_WP_diff_max_minus_source_time_series.png')
 
 
 # How does tau very with WP? ###################################################
